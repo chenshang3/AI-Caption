@@ -157,6 +157,21 @@
                         <i id="btnIcon" class="fa-solid fa-bolt"></i>
                     </div>
                 </button>
+
+                <div class="glass-panel rounded-2xl p-6 mt-4">
+                    <h3 class="font-bold text-white">BLEU 翻译质量评估</h3>
+
+                    <button id="btn-evaluate"
+                         class="bg-primary mt-3 px-4 py-2 rounded-lg text-white font-bold hover:bg-primary/80">
+                        评估翻译（BLEU）
+                    </button>
+
+                    <input type="file" id="ref-file" accept=".srt" />
+                    <button id="btn-upload-ref">上传参考字幕</button>
+
+
+                <div id="bleu-result" class="mt-3 text-accent font-bold text-lg"></div>
+                </div>
             </div>
         </div>
 
@@ -235,8 +250,8 @@
                     </a>
                 </div>
             </div>
-
         </div>
+      </div>
     </main>
 
     <script>
@@ -446,7 +461,7 @@
                     })
                 });
                 const genOriginalData = await genOriginalRes.json();
-
+                window.referenceSubtitlePath = genOriginalData.file_path;
                 // 2. 生成已翻译字幕 (Translated)
                 const genTransRes = await fetch('/api/generate-subtitle', {
                     method: 'POST',
@@ -459,7 +474,9 @@
                     })
                 });
                 const genTransData = await genTransRes.json();
-
+                // 保存到全局变量，供 BLEU 评估使用
+                window.candidateSubtitlePath = genTransData.file_path;
+                log("双语字幕文件生成完成", 'success');
                 // ---------------------------------------------------------
                 // 完成与显示 (Finish)
                 // ---------------------------------------------------------
@@ -509,6 +526,75 @@
                 document.getElementById('btnIcon').className = "fa-solid fa-bolt";
             }
         });
+
+        // ---------------------------------------------------------
+        // BLEU 评估按钮逻辑
+        // ---------------------------------------------------------
+
+    document.getElementById("btn-upload-ref").addEventListener("click", async () => {
+    const fileInput = document.getElementById("ref-file");
+
+    if (!fileInput.files.length) {
+        alert("请选择一个 reference.srt 文件！");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+
+    const res = await fetch("/api/upload-reference", {
+        method: "POST",
+        body: formData
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+        alert("参考字幕上传成功！");
+    } else {
+        alert("上传失败：" + data.error);
+    }
+});
+
+    document.getElementById("btn-evaluate")?.addEventListener("click", async function () {
+
+    const referencePath = "data/reference.srt";
+
+    if (!window.lastGeneratedSubtitlePath) {
+        alert("请先生成字幕文件再评估 BLEU！");
+        return;
+    }
+
+    const candidatePath = window.lastGeneratedSubtitlePath;
+
+    log("开始 BLEU 翻译质量评估...", "system");
+
+    const response = await fetch("/api/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            reference_path: referencePath,
+            candidate_path: candidatePath
+        })
+    });
+
+    const result = await response.json();
+
+    if (!result.success) {
+        log("BLEU 评估失败：" + result.error, "error");
+        alert("BLEU 评估失败：" + result.error);
+        return;
+    }
+
+    log("BLEU 评估完成！得分：" + result.bleu.score.toFixed(2), "success");
+
+    // 展示 UI（你已经加好了 bleuArea）
+    document.getElementById("bleuArea").classList.remove("hidden");
+    document.getElementById("bleu-result").innerText =
+        "BLEU 得分: " + result.bleu.score.toFixed(2);
+    document.getElementById("bleu-result").classList.remove("hidden");
+    });
+
     </script>
 </body>
 </html>
