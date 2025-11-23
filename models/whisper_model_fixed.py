@@ -1,181 +1,176 @@
-# 修复版Whisper模型 - 无需FFmpeg依赖
-
 import whisper
 import os
 import logging
-from typing import Optional, Dict, Any
+import torch
 import numpy as np
-import wave
+import math
+from typing import Optional, Dict, Any, List, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
+# 修复：使用相对导入以确保在 models 包结构中能够正确找到 VLMSceneAnalyzer
+try:
+    from .vlm_analyzer import VLMSceneAnalyzer
+except ImportError:
+    # 仅在 VLM 模块未找到时记录警告，以便 Whisper 仍能运行（非视频文件场景）
+    logging.warning("VLMSceneAnalyzer module not found. Video analysis will be skipped.")
+    VLMSceneAnalyzer = None
+
+# 确保日志配置正确（修正了用户代码中的 log format typo）
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class WhisperModel:
-    def __init__(self, model_name: str = "base", device: str = "cpu"):
-        """
-        初始化Whisper模型
-        
-        Args:
-            model_name: 模型名称 (tiny, base, small, medium, large)
-            device: 运行设备 (cpu, cuda)
-        """
+
+class WhisperTranscriber:
+    """
+    负责加载 Whisper ASR 模型，并协调 VLMSceneAnalyzer 进行音视频联合分析。
+    """
+
+    def __init__(self, model_name: str = "medium", device: str = "cpu"):
         self.model_name = model_name
-        self.device = device
+        self.whisper_device = device
         self.model = None
-        self.load_model()
-    
-    def load_model(self):
-        """加载Whisper模型"""
+        self.vlm_analyzer = None
+
+        self.frames_per_minute = 2  # 目标每分钟采样帧数
+        self.max_frames_to_process = 180  # 硬性上限 (防止失控)
+
+        self.load_whisper_model()
+        self.load_vlm_component()
+        if self.whisper_device == "cuda":
+            torch.cuda.empty_cache()
+
+    def load_whisper_model(self):
+        """加载 Whisper 模型。"""
         try:
-            logger.info(f"正在加载Whisper模型: {self.model_name}")
-            self.model = whisper.load_model(self.model_name, device=self.device)
-            logger.info(f"Whisper模型 {self.model_name} 加载成功")
+            # Check for CUDA availability and set device accordingly
+            device = self.whisper_device if self.whisper_device == "cuda" and torch.cuda.is_available() else "cpu"
+            logger.info(f"Loading Whisper model: {self.model_name} to {device}")
+            self.model = whisper.load_model(self.model_name, device=device)
+            self.whisper_device = device  # Update the actual device used
+            logger.info(f"Whisper model {self.model_name} loaded successfully on {device}.")
         except Exception as e:
-            logger.error(f"加载Whisper模型失败: {e}")
-            raise Exception(f"无法加载Whisper模型: {e}")
-    
-    def transcribe(self, audio_path: str, language: str = "auto", 
-                   task: str = "transcribe") -> Dict[str, Any]:
+            logger.error(f"Failed to load Whisper model: {e}")
+            raise Exception(f"Whisper model load failed: {e}")
+
+    def load_vlm_component(self):
+        """加载 VLMSceneAnalyzer 组件。"""
+        if VLMSceneAnalyzer:
+            try:
+                self.vlm_analyzer = VLMSceneAnalyzer()
+                logger.info("VLM Scene Analyzer component loaded successfully.")
+            except Exception as e:
+                logger.error(f"Failed to load VLMSceneAnalyzer: {e}. Video context analysis will be disabled.")
+                self.vlm_analyzer = None
+        else:
+            logger.warning("VLMSceneAnalyzer class is unavailable. Video analysis is disabled.")
+
+    def transcribe(self, media_path: str, language: str = "auto", task: str = "transcribe",
+                   video_source_path: Optional[str] = None) -> Dict[str, Any]:
         """
-        转录音频文件 - 修复版，无需FFmpeg依赖
-        
-        Args:
-            audio_path: 音频文件路径
-            language: 音频语言 (auto表示自动检测)
-            task: 任务类型 (transcribe, translate)
-            
-        Returns:
-            包含转录结果的字典
+        Performs audio transcription and coordinates VLM analysis if a video source is present.
         """
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"音频文件不存在: {audio_path}")
-        
+        if not os.path.exists(media_path):
+            raise FileNotFoundError(f"Media file not found: {media_path}")
+
         try:
-            logger.info(f"开始转录音频: {audio_path}")
-            
-            # 直接使用Whisper加载音频文件（不依赖FFmpeg）
-            audio = self._load_audio_directly(audio_path)
-            
-            # 设置转录选项
+            logger.info(f"Starting transcription for: {media_path}")
+
+            # 1. Audio Preprocessing and Transcription
+            audio = whisper.load_audio(media_path)
+            duration = len(audio) / whisper.audio.SAMPLE_RATE
+
+            audio_tensor = torch.from_numpy(audio).float().to(self.whisper_device)
+            if audio_tensor.ndim > 1:
+                audio_tensor = audio_tensor.mean(dim=0)
+
             options = {
                 "task": task,
-                "verbose": False
+                "beam_size": 3,
+                "fp16": True if self.whisper_device == "cuda" else False,
+                "language": language if language != "auto" else None
             }
-            
-            if language != "auto":
-                options["language"] = language
-            
-            # 执行转录
-            result = self.model.transcribe(audio, **options)
-            
-            logger.info(f"音频转录完成，耗时: {result.get('duration', 0):.2f}秒")
-            
+            logger.info("Executing Whisper transcription...")
+            result = self.model.transcribe(audio_tensor, **options)
+            segments = result.get("segments", [])
+            logger.info(f"Whisper transcription completed. Found {len(segments)} segments.")
+
+            # 2. Video Path Handling
+            video_path = None
+            if video_source_path and os.path.exists(video_source_path) and video_source_path.lower().endswith(
+                    (".mp4", ".avi", ".mov", ".mkv")):
+                video_path = video_source_path
+            elif media_path.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
+                video_path = media_path
+
+            is_video_valid = video_path and self.vlm_analyzer is not None
+
+            # 3. VLM Scene Analysis Coordination
+            frame_ctx_cache = {}
+            if is_video_valid:
+                logger.info("Starting video frame processing...")
+
+                # Dynamic calculation of target frames
+                dynamic_target_frames = math.ceil((duration / 60) * self.frames_per_minute)
+                dynamic_target_frames = max(1, dynamic_target_frames)
+                final_limit = min(dynamic_target_frames, self.max_frames_to_process)
+
+                logger.info(
+                    f"Video Duration: {duration:.2f}s, Dynamic Target Frames: {dynamic_target_frames} (Hard Limit: {self.max_frames_to_process})")
+
+                # Generate and deduplicate keyframe timestamps
+                raw_timestamps = [(seg["start"] + seg["end"]) / 2 for seg in segments]
+                # Call VLM module's deduplication logic
+                target_timestamps = self.vlm_analyzer._deduplicate_timestamps(raw_timestamps, final_limit, duration)
+
+                logger.info(f"Final frames to extract: {len(target_timestamps)}...")
+
+                if target_timestamps:
+                    # Call VLM module's core analysis method
+                    frame_ctx_cache = self.vlm_analyzer.analyze_frames(video_path, target_timestamps)
+                else:
+                    is_video_valid = False
+
+            # 4. Result Assembly and Context Matching
+            default_context = {
+                "scene_type": "Non-video file" if not is_video_valid else "Frame extraction failed",
+                "environment": "Undetected",
+                "emotion": "Undetected",
+                "activity": "Undetected",
+                "description": "No scene information",
+            }
+
+            final_segments = []
+            for seg in segments:
+                mid_ts = (seg["start"] + seg["end"]) / 2
+                segment_av_ctx = default_context
+
+                if frame_ctx_cache:
+                    # Find the closest processed frame
+                    closest_ts = min(frame_ctx_cache.keys(), key=lambda x: abs(x - mid_ts))
+                    if abs(closest_ts - mid_ts) <= 3.0:  # Ensure time match is reasonable
+                        segment_av_ctx = frame_ctx_cache[closest_ts]
+
+                final_segments.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": seg["text"].strip(),
+                    "av_context": segment_av_ctx
+                })
+
+            # Extract global context (use the first valid frame description)
+            global_av_ctx = next(iter(frame_ctx_cache.values())) if frame_ctx_cache else default_context
+            if self.whisper_device == "cuda":
+                torch.cuda.empty_cache()
+
             return {
-                "text": result["text"],
-                "segments": result["segments"],
-                "language": result.get("language", "unknown"),
-                "duration": result.get("duration", 0)
+                "text": result["text"].strip(),
+                "segments": final_segments,
+                "language": result["language"],
+                "duration": duration,
+                "global_av_context": global_av_ctx
             }
-            
         except Exception as e:
-            logger.error(f"音频转录失败: {e}")
-            raise Exception(f"音频转录失败: {e}")
-    
-    def _load_audio_directly(self, audio_path: str):
-        """
-        直接加载音频文件，不依赖FFmpeg
-        
-        Args:
-            audio_path: 音频文件路径
-            
-        Returns:
-            音频数据
-        """
-        try:
-            # 尝试使用Whisper内置的音频加载功能
-            return whisper.load_audio(audio_path)
-        except Exception as e:
-            logger.warning(f"Whisper内置音频加载失败: {e}")
-            
-            # 回退方案：手动读取WAV文件
-            try:
-                return self._load_wav_manually(audio_path)
-            except Exception as e2:
-                logger.error(f"手动音频加载也失败: {e2}")
-                raise Exception(f"无法加载音频文件，请确保文件格式正确: {e}")
-    
-    def _load_wav_manually(self, audio_path: str):
-        """
-        手动读取WAV文件
-        
-        Args:
-            audio_path: WAV文件路径
-            
-        Returns:
-            音频数据数组
-        """
-        import wave
-        import numpy as np
-        
-        with wave.open(audio_path, 'rb') as wav_file:
-            # 获取音频参数
-            channels = wav_file.getnchannels()
-            sample_width = wav_file.getsampwidth()
-            frame_rate = wav_file.getframerate()
-            n_frames = wav_file.getnframes()
-            
-            logger.info(f"WAV文件信息: {channels}通道, {sample_width}字节, {frame_rate}Hz, {n_frames}帧")
-            
-            # 读取音频数据
-            audio_data = wav_file.readframes(n_frames)
-            
-            # 转换为numpy数组
-            if sample_width == 1:  # 8位音频
-                audio_array = np.frombuffer(audio_data, dtype=np.uint8)
-                audio_array = audio_array.astype(np.float32) / 128.0 - 1.0
-            elif sample_width == 2:  # 16位音频
-                audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                audio_array = audio_array.astype(np.float32) / 32768.0
-            else:
-                raise ValueError(f"不支持的采样宽度: {sample_width}")
-            
-            # 如果是立体声，转换为单声道
-            if channels > 1:
-                audio_array = audio_array.reshape(-1, channels)
-                audio_array = audio_array.mean(axis=1)
-            
-            # 重采样到16kHz（Whisper要求）
-            if frame_rate != 16000:
-                logger.info(f"重采样从 {frame_rate}Hz 到 16000Hz")
-                from scipy import signal
-                audio_array = signal.resample(audio_array, int(len(audio_array) * 16000 / frame_rate))
-            
-            return audio_array
-    
-    def get_supported_languages(self) -> Dict[str, str]:
-        """获取支持的语言列表"""
-        return whisper.tokenizer.LANGUAGES
-    
-    def detect_language(self, audio_path: str) -> str:
-        """
-        检测音频语言
-        
-        Args:
-            audio_path: 音频文件路径
-            
-        Returns:
-            语言代码
-        """
-        try:
-            # 加载音频
-            audio = self._load_audio_directly(audio_path)
-            
-            # 检测语言
-            language_probs = self.model.detect_language(audio)
-            detected_language = max(language_probs, key=language_probs.get)
-            
-            logger.info(f"检测到音频语言: {detected_language}")
-            return detected_language
-            
-        except Exception as e:
-            logger.error(f"语言检测失败: {e}")
-            return "unknown"
+            logger.error(f"Transcription failed: {e}", exc_info=True)
+            if self.whisper_device == "cuda":
+                torch.cuda.empty_cache()
+            raise Exception(f"Transcription error: {e}")
