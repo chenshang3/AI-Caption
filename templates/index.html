@@ -108,7 +108,6 @@
                 class="glass-panel rounded-2xl p-1 transition-all duration-300 hover:shadow-lg hover:shadow-primary/10">
                 <div class="border-2 border-dashed border-slate-700 hover:border-primary rounded-xl bg-slate-900/50 p-8 text-center cursor-pointer transition-colors group relative min-h-[200px] flex flex-col justify-center"
                     id="dropZone">
-                    <!-- File Input: z-index 10, but we need to make sure buttons are higher -->
                     <input type="file" id="fileInput"
                         class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                         accept=".mp4,.mp3,.wav,.mkv,.flac,.m4a" multiple>
@@ -125,13 +124,10 @@
                         </div>
                     </div>
 
-                    <!-- File List Container: z-index 20 to sit above file input -->
                     <div id="fileList"
                         class="hidden flex-col gap-3 relative z-20 mt-4 w-full max-h-[300px] overflow-y-auto pr-2">
-                        <!-- File items will be injected here -->
-                    </div>
+                        </div>
 
-                    <!-- Add More Button -->
                     <div id="addMoreBtnContainer" class="hidden relative z-20 mt-4 text-center">
                         <button id="addMoreBtn"
                             class="text-sm text-slate-400 hover:text-primary transition flex items-center justify-center gap-2 mx-auto border border-dashed border-slate-600 hover:border-primary rounded-lg px-4 py-2 w-full">
@@ -276,18 +272,13 @@
             </div>
 
             <div id="downloadArea" class="hidden glass-panel rounded-2xl p-6 border-l-4 border-l-accent bg-accent/5">
-                <!-- 这里的初始内容会被JS覆盖 -->
                 <div class="flex items-center justify-between">
                     <div>
                         <h3 class="font-bold text-white">🎉 处理完成</h3>
                         <p class="text-xs text-slate-400 mt-1">耗时: <span id="timeCost" class="text-accent">0.0</span>s
                         </p>
                     </div>
-                    <a id="downloadLink" href="#"
-                        class="bg-accent hover:bg-emerald-400 text-slate-900 font-bold py-2.5 px-6 rounded-lg transition flex items-center gap-2 shadow-lg shadow-accent/20">
-                        <i class="fa-solid fa-download"></i> 下载字幕
-                    </a>
-                </div>
+                    </div>
             </div>
 
         </div>
@@ -301,7 +292,8 @@
 
         // DOM 元素
         const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
+        // ⭐ 关键：使用 let 允许我们在运行时替换元素
+        let fileInput = document.getElementById('fileInput');
         const uploadPrompt = document.getElementById('uploadPrompt');
         const fileList = document.getElementById('fileList');
         const addMoreBtnContainer = document.getElementById('addMoreBtnContainer');
@@ -309,6 +301,27 @@
         const startBtn = document.getElementById('startBtn');
         const consoleOutput = document.getElementById('consoleOutput');
         const downloadArea = document.getElementById('downloadArea');
+
+
+        // ⭐ 关键函数：替换 fileInput 元素并重新绑定事件
+        function replaceFileInput() {
+            // 1. 创建一个新的 input 元素，并复制原有的属性
+            const newFileInput = fileInput.cloneNode(true);
+            newFileInput.value = ''; // 确保是干净的
+
+            // 2. 替换 DOM 中的旧元素
+            fileInput.parentNode.replaceChild(newFileInput, fileInput);
+
+            // 3. 更新 JavaScript 中的引用
+            fileInput = newFileInput;
+
+            // 4. 重新绑定 change 事件监听器
+            fileInput.addEventListener('change', (e) => {
+                handleFiles(e.target.files);
+            });
+
+            log('系统已重置文件上传组件', 'warn'); // 提示重置成功
+        }
 
         // 工具函数：日志输出
         function log(msg, type = 'info') {
@@ -369,6 +382,11 @@
                 log(`已移除文件: ${item.file.name}`, 'system');
                 updateUI();
             }
+
+            // ⭐ 修复：移除文件后，如果队列空了，替换 input 元素，确保彻底清空内部文件列表
+            if (fileQueue.length === 0) {
+                replaceFileInput();
+            }
         };
 
         function updateUI() {
@@ -392,9 +410,10 @@
                 fileInput.classList.add('hidden');
 
                 if (!isProcessing) {
-                    startBtn.disabled = false;
-                    startBtn.classList.remove('bg-slate-800');
-                    document.getElementById('btnText').textContent = `开始处理 (${fileQueue.filter(i => i.status === 'pending').length} 个文件)`;
+                    const pendingCount = fileQueue.filter(i => i.status === 'pending').length;
+                    startBtn.disabled = (pendingCount === 0);
+                    startBtn.classList.toggle('bg-slate-800', (pendingCount === 0));
+                    document.getElementById('btnText').textContent = `开始处理 (${pendingCount} 个文件)`;
                 }
             }
 
@@ -411,17 +430,18 @@
                         </button>`;
                 } else if (item.status === 'processing') {
                     statusHtml = '<span class="text-primary text-xs flex items-center gap-1"><i class="fa-solid fa-circle-notch fa-spin"></i> 处理中...</span>';
+                    actionHtml = '<span class="text-slate-500 text-xs pr-2">处理中</span>'; // 禁用操作
                 } else if (item.status === 'completed') {
                     statusHtml = '<span class="text-accent text-xs flex items-center gap-1"><i class="fa-solid fa-check"></i> 已完成</span>';
                     actionHtml = `
                         <div class="flex gap-2">
-                             <a href="${item.result.original}" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded-md transition border border-slate-600">原文</a>
-                             <a href="${item.result.translated}" class="text-xs bg-accent hover:bg-emerald-400 text-slate-900 px-3 py-1.5 rounded-md transition font-bold shadow-lg shadow-accent/20">译文</a>
+                             <a href="${item.result.original}" target="_blank" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded-md transition border border-slate-600">原文</a>
+                             <a href="${item.result.translated}" target="_blank" class="text-xs bg-accent hover:bg-emerald-400 text-slate-900 px-3 py-1.5 rounded-md transition font-bold shadow-lg shadow-accent/20">译文</a>
                         </div>`;
                 } else if (item.status === 'error') {
                     statusHtml = '<span class="text-red-400 text-xs flex items-center gap-1"><i class="fa-solid fa-triangle-exclamation"></i> 失败</span>';
                     actionHtml = `
-                        <button onclick="removeFile('${item.id}')" class="text-slate-400 hover:text-red-400 transition p-2 z-30">
+                        <button onclick="removeFile('${item.id}')" class="text-slate-400 hover:text-red-400 transition p-2 z-30 rounded-full hover:bg-slate-700">
                             <i class="fa-solid fa-trash"></i>
                         </button>`;
                 }
@@ -447,18 +467,54 @@
                 </div>
                 `;
             }).join('');
+
+            // ⭐ 修复：移除 fileInput.value = ''; 依赖，改为依赖 replaceFileInput()
         }
 
-        // 事件监听
+        // 事件监听：文件选择 (在 replaceFileInput() 中重新绑定)
+        // 初始绑定
         fileInput.addEventListener('change', (e) => {
             handleFiles(e.target.files);
-            fileInput.value = ''; // Reset
         });
 
+        // 事件监听：添加更多按钮
         addMoreBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            fileInput.click(); // Manually trigger input
+
+            // ⭐ 修复：点击添加更多时，先替换 input 元素
+            if (!isProcessing) {
+                replaceFileInput();
+            }
+
+            // 触发新 input 的点击
+            fileInput.click();
         });
+
+        // 拖拽事件监听器
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault(); // 允许拖放
+            dropZone.classList.add('anim-pulse-border');
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            dropZone.classList.remove('anim-pulse-border');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('anim-pulse-border');
+
+            // 检查是否有文件
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                // ⭐ 修复：拖拽时，也替换 input 元素，确保下次点击是干净的
+                if (fileQueue.length === 0) {
+                    replaceFileInput();
+                }
+                handleFiles(e.dataTransfer.files);
+            }
+        });
+
 
         // 核心流程：队列处理
         startBtn.addEventListener('click', async () => {
@@ -469,9 +525,11 @@
             startBtn.disabled = true;
             document.getElementById('btnText').textContent = "正在处理队列...";
             document.getElementById('btnIcon').className = "fa-solid fa-circle-notch fa-spin";
+            processStartTime = Date.now(); // 记录开始时间
 
             // 隐藏之前的下载区域（如果是重新开始）
             downloadArea.classList.add('hidden');
+            clearLog(); // 清空日志，准备新一轮处理
 
             try {
                 for (const item of pendingItems) {
@@ -479,50 +537,59 @@
                     item.status = 'processing';
                     updateUI();
 
-                    // 滚动到当前项
-                    // ...
-
                     try {
                         await processSingleFile(item);
                         item.status = 'completed';
                     } catch (err) {
                         console.error(err);
                         item.status = 'error';
-                        log(`文件 ${item.file.name} 处理失败: ${err.message}`, 'error');
+                        // 尝试从错误对象中获取详细信息
+                        const errMsg = err.message || (err.response && err.response.statusText) || '未知错误';
+                        log(`文件 ${item.file.name} 处理失败: ${errMsg}`, 'error');
                     }
 
                     updateUI();
                 }
 
-                log("🎉 队列处理完成", 'success');
+                const totalTime = ((Date.now() - processStartTime) / 1000).toFixed(2);
+                log(`🎉 队列处理完成。总耗时 ${totalTime}s`, 'success');
+
+                // 检查是否有完成项来显示总下载区域
+                if (fileQueue.some(i => i.status === 'completed')) {
+                     downloadArea.classList.remove('hidden');
+                     document.getElementById('timeCost').textContent = totalTime;
+                }
 
             } finally {
                 isProcessing = false;
-                startBtn.disabled = false;
-                document.getElementById('btnText').textContent = "处理未完成任务";
+                const pendingCount = fileQueue.filter(i => i.status === 'pending').length;
+                startBtn.disabled = (pendingCount === 0);
+                document.getElementById('btnText').textContent = pendingCount > 0 ? "处理未完成任务" : "开始智能处理";
                 document.getElementById('btnIcon').className = "fa-solid fa-bolt";
-                updateUI();
+                updateUI(); // 最终更新 UI
             }
         });
 
-        // 单个文件处理逻辑 (封装原有的流程)
+        // 核心 FETCH 调用逻辑 (保持不变)
         async function processSingleFile(item) {
             const file = item.file;
             log(`>>> 开始处理: ${file.name}`, 'system');
 
             resetSteps(); // 重置步骤条动画
 
+            let uploadData = {};
+            let transcribeData = {};
+
             // Step 1: Upload
             updateStep('step1', 'active');
             log("正在上传...", 'system');
-
             const formData = new FormData();
             formData.append('file', file);
 
             const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
-            const uploadData = await uploadRes.json();
-            if (!uploadData.success) throw new Error(uploadData.error);
-
+            if (!uploadRes.ok) throw new Error(`上传失败: ${uploadRes.status} ${uploadRes.statusText}`);
+            uploadData = await uploadRes.json();
+            if (!uploadData.success) throw new Error(uploadData.error || '上传 API 返回失败');
             updateStep('step1', 'completed');
 
             // Step 2: Transcribe
@@ -537,9 +604,9 @@
                     language: document.getElementById('sourceLang').value
                 })
             });
-            const transcribeData = await transcribeRes.json();
-            if (!transcribeData.success) throw new Error(transcribeData.error);
-
+            if (!transcribeRes.ok) throw new Error(`转录失败: ${transcribeRes.status} ${transcribeRes.statusText}`);
+            transcribeData = await transcribeRes.json();
+            if (!transcribeData.success) throw new Error(transcribeData.error || '转录 API 返回失败');
             updateStep('step2', 'completed');
 
             // Step 3 & 4: Translate
@@ -559,16 +626,20 @@
                     use_reflection: useReflection
                 })
             });
+            if (!translateRes.ok) throw new Error(`翻译失败: ${translateRes.status} ${translateRes.statusText}`);
             const translateData = await translateRes.json();
-            if (!translateData.success) throw new Error(translateData.error);
+            if (!translateData.success) throw new Error(translateData.error || '翻译 API 返回失败');
 
             updateStep('step3', 'completed');
-            if (useReflection) updateStep('step4', 'completed');
+            if (useReflection) {
+                 log("LLM 反思完成，已润色翻译。", 'system');
+                 updateStep('step4', 'completed');
+            }
 
             // Step 5: Generate Subtitles
             log("生成字幕文件...", 'system');
 
-            // Original
+            // Original Subtitle Generation
             const genOriginalRes = await fetch('/api/generate-subtitle', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -579,9 +650,11 @@
                     suffix: 'original'
                 })
             });
+            if (!genOriginalRes.ok) throw new Error(`生成原文失败: ${genOriginalRes.status} ${genOriginalRes.statusText}`);
             const genOriginalData = await genOriginalRes.json();
+            if (!genOriginalData.success) throw new Error(genOriginalData.error || '生成原文 API 返回失败');
 
-            // Translated
+            // Translated Subtitle Generation
             const genTransRes = await fetch('/api/generate-subtitle', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -592,7 +665,9 @@
                     suffix: 'translated'
                 })
             });
+            if (!genTransRes.ok) throw new Error(`生成译文失败: ${genTransRes.status} ${genTransRes.statusText}`);
             const genTransData = await genTransRes.json();
+            if (!genTransData.success) throw new Error(genTransData.error || '生成译文 API 返回失败');
 
             // 保存结果
             item.result = {
@@ -602,6 +677,7 @@
 
             log(`✅ ${file.name} 处理成功`, 'success');
         }
+
 
         // 更新步骤条状态 (保持不变)
         function updateStep(stepId, status) {
