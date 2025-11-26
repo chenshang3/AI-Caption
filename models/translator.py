@@ -29,20 +29,26 @@ class NeuralTranslator:
         """加载 NMT 模型、反思模型和 QE 模型"""
         try:
             # 1. 加载 NMT 模型（NLLB，支持多语言翻译）
+            local_path = "models/nllb-200-3.3B"
             logger.info(f"Loading NMT model: {nmt_model_id} (Device: {self.device})")
-            self.nmt_tokenizer = AutoTokenizer.from_pretrained(nmt_model_id)
+            logger.info(f"Loading NLLB model from local path: {local_path}")
+            self.nmt_tokenizer = AutoTokenizer.from_pretrained(
+            local_path,
+            local_files_only=True           # 禁止访问 huggingface
+)
             # 使用 float16 减少显存占用，加速 GPU 推理
             nmt_dtype = torch.float16 if self.device.type == 'cuda' else torch.float32
 
             # [注意] transformers 库提示 torch_dtype 已废弃，使用 dtype
             self.nmt_model = AutoModelForSeq2SeqLM.from_pretrained(
-            nmt_model_id,
+            local_path,
             use_safetensors=True,
             low_cpu_mem_usage=True,
             dtype=nmt_dtype,
-            device_map="auto",               # 大模型必需
-            offload_folder="offload_nllb",   # 防止显存不够时自动落盘（可选）
-            ).to(self.device)
+            device_map="auto",
+            offload_folder="offload_nllb",
+            local_files_only=True           # ⭐ 关键：只加载本地，不联网
+).to(self.device)
             logger.info("✅ NMT model loaded successfully.")
 
             # 2. 加载反思模型（可选，用于优化翻译结果）
@@ -53,8 +59,8 @@ class NeuralTranslator:
 
                 self.reflector = pipeline(
                 "text-generation",
-                model=reflection_model_id,
-                dtype=torch.float32,
+                model="/home/kou000/AI-Caption/models/Qwen3-8B",
+                torch_dtype=torch.float32,
                 device_map="auto",
                 model_kwargs={
                     "low_cpu_mem_usage": True,
