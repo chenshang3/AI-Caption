@@ -64,3 +64,4 @@ models/__pycache__/
 test_*.json
 transcription_result.json
 translation_result.json
+models/Qwen3-8B/
