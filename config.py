@@ -17,11 +17,11 @@ class Config:
     WHISPER_DEVICE = 'cuda'  # 若有N卡改为 'cuda'
 
     # 2. NMT Model（新增 TRANSLATOR_DEVICE 配置）
-    NMT_MODEL_ID = "facebook/nllb-200-3.3B"  # 原有的NMT模型ID
+    NMT_MODEL_ID = "facebook/nllb-200-1.3B"  # 原有的NMT模型ID
     TRANSLATOR_DEVICE = 'cuda'  # 翻译模型的设备（与Whisper保持一致，无GPU则改为 'cpu'）
 
     # 3. Reflection LLM Model
-    REFLECTION_MODEL_ID = "Qwen/Qwen3-VL-8B"
+    REFLECTION_MODEL_ID = "Qwen/Qwen3-8B"
 
     # 4. Transfer Learning Config
     FINETUNE_EPOCHS = 3
