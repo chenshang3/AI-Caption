@@ -65,3 +65,5 @@ test_*.json
 transcription_result.json
 translation_result.json
 models/Qwen3-8B/
+nllb-200-3.3B*
+nllb*
